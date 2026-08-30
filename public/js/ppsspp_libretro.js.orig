@@ -1,0 +1,3 @@
+    if (typeof target === "string" && target[0] === '!') {
+        target = "#" + target.slice(1);
+    }
