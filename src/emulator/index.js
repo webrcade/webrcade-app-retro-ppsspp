@@ -8,16 +8,31 @@ import {
   KCODES,
   CIDS,
   LOG,
+  // Zip,
 } from '@webrcade/app-common';
 
-import {
-  ppge_atlas, jpn0, ltn0
-} from "./files"
+// WRC - same ANALOG_BIT convention as the N64 apps and
+// webrcade-app-retro-flycast: OR'd onto CIDS.UP/DOWN/LEFT/RIGHT, it gives
+// that key mapping-table entry a value distinct from the plain digital
+// CID, so pollControls() below can tell "this key means move the analog
+// stick" apart from "this key means press the D-pad" and react
+// accordingly - controllers.getAxisValue()/isControlDown() have no idea
+// this bit exists; it's purely this app's own convention to check for.
+const ANALOG_BIT = 0x8000;
+const ANALOG_UP = ANALOG_BIT | CIDS.UP;
+const ANALOG_DOWN = ANALOG_BIT | CIDS.DOWN;
+const ANALOG_LEFT = ANALOG_BIT | CIDS.LEFT;
+const ANALOG_RIGHT = ANALOG_BIT | CIDS.RIGHT;
 
 export class Emulator extends RetroAppWrapper {
 
-  GAME_SRAM_NAME = 'game.srm';
+  // WRC - required by RetroAppWrapper itself (retrowrapper/index.js:914,
+  // `this.saveStatePath = ${this.saveStatePrefix}${this.SAVE_NAME}`) to
+  // compute saveStatePath at boot - not specific to the old game.srm
+  // save mechanism (removed below), still load-bearing for the SAVEDATA
+  // path built from it.
   SAVE_NAME = 'sav';
+  SAVEDATA_DIR = '/home/web_user/retroarch/userdata/saves/PSP/SAVEDATA';
 
   constructor(app, debug = false) {
     super(app, debug);
@@ -127,12 +142,16 @@ export class Emulator extends RetroAppWrapper {
   createControllers() {
     this.keyToControlMapping = new KeyCodeToControlMapping({
       [KCODES.ENTER]: CIDS.START,
-      [KCODES.SHIFT]: CIDS.SELECT,
+      [KCODES.SHIFT_RIGHT]: CIDS.SELECT,
       [KCODES.ESCAPE]: CIDS.ESCAPE,
-      [KCODES.ARROW_UP]: CIDS.UP,
-      [KCODES.ARROW_DOWN]: CIDS.DOWN,
-      [KCODES.ARROW_RIGHT]: CIDS.RIGHT,
-      [KCODES.ARROW_LEFT]: CIDS.LEFT,
+      [KCODES.ARROW_UP]: ANALOG_UP,
+      [KCODES.ARROW_DOWN]: ANALOG_DOWN,
+      [KCODES.ARROW_RIGHT]: ANALOG_RIGHT,
+      [KCODES.ARROW_LEFT]: ANALOG_LEFT,
+      [KCODES.I]: CIDS.UP,
+      [KCODES.J]: CIDS.LEFT,
+      [KCODES.K]: CIDS.DOWN,
+      [KCODES.L]: CIDS.RIGHT,
       [KCODES.S]: CIDS.Y, // Triangle
       [KCODES.X]: CIDS.B, // Circle
       [KCODES.Z]: CIDS.A, // Cross
@@ -146,6 +165,129 @@ export class Emulator extends RetroAppWrapper {
       new Controller(),
       new Controller(),
     ]);
+  }
+
+  // WRC - full copy of RetroAppWrapper's own default pollControls()
+  // (webrcade-app-common/src/app/retrowrapper/index.js), plus the
+  // ANALOG_BIT override block at the end. This app previously relied
+  // entirely on that shared default (see the comment above
+  // createControllers()) - overriding it here, rather than adding
+  // ANALOG_BIT support to the shared base, keeps the change scoped to
+  // this app only, matching how webrcade-app-retro-flycast and the N64
+  // apps each already do their own per-app pollControls() rather than
+  // touching code every other RetroAppWrapper-based app also depends on.
+  // Keep in sync with the base method if that ever changes.
+  pollControls() {
+    const { analogMode, CONTROLLER_COUNT, controllers, keyToControlMapping } = this;
+
+    controllers.poll();
+
+    const isAnalog = analogMode;
+
+    if (
+      controllers.isControlDown(0, CIDS.RTRIG) ||
+      controllers.isControlDown(0, CIDS.LTRIG) ||
+      controllers.isControlDown(0, CIDS.LANALOG) ||
+      controllers.isControlDown(0, CIDS.RANALOG)
+    ) {
+      this.escapeCount = this.escapeCount === -1 ? 0 : this.escapeCount + 1;
+    } else {
+      this.escapeCount = -1;
+    }
+
+    for (let i = 0; i < CONTROLLER_COUNT; i++) {
+      let input = 0;
+
+      const escapeOk = !this.isEscapeHackEnabled() || (this.escapeCount === -1 || this.escapeCount < 60);
+
+      // Hack to reduce likelihood of accidentally bringing up menu
+      if (
+        controllers.isControlDown(0 /*i*/, CIDS.ESCAPE) && escapeOk
+      ) {
+        if (this.handleEscape(controllers)) {
+            return;
+        } else if (this.pause(true)) {
+          controllers
+            .waitUntilControlReleased(0 /*i*/, CIDS.ESCAPE)
+            .then(() => this.showPauseMenu());
+          return;
+        }
+      }
+
+      if (controllers.isControlDown(i, CIDS.UP, !isAnalog)) {
+        input |= this.INP_UP;
+      } else if (controllers.isControlDown(i, CIDS.DOWN, !isAnalog)) {
+        input |= this.INP_DOWN;
+      }
+      if (controllers.isControlDown(i, CIDS.RIGHT, !isAnalog)) {
+        input |= this.INP_RIGHT;
+      } else if (controllers.isControlDown(i, CIDS.LEFT, !isAnalog)) {
+        input |= this.INP_LEFT;
+      }
+      if (controllers.isControlDown(i, CIDS.START) && escapeOk) {
+        input |= this.INP_START;
+      }
+      if (controllers.isControlDown(i, CIDS.SELECT) && escapeOk) {
+        input |= this.INP_SELECT;
+      }
+      if (controllers.isControlDown(i, CIDS.A)) {
+        input |= this.INP_A;
+      }
+      if (controllers.isControlDown(i, CIDS.B)) {
+        input |= this.INP_B;
+      }
+      if (controllers.isControlDown(i, CIDS.X)) {
+        input |= this.INP_X;
+      }
+      if (controllers.isControlDown(i, CIDS.Y)) {
+        input |= this.INP_Y;
+      }
+      if (controllers.isControlDown(i, CIDS.LBUMP)) {
+        input |= this.INP_LBUMP;
+      }
+      if (controllers.isControlDown(i, CIDS.RBUMP)) {
+        input |= this.INP_RBUMP;
+      }
+      if (controllers.isControlDown(i, CIDS.LTRIG)) {
+        input |= this.INP_LTRIG;
+      }
+      if (controllers.isControlDown(i, CIDS.RTRIG)) {
+        input |= this.INP_RTRIG;
+      }
+      if (controllers.isControlDown(i, CIDS.LANALOG)) {
+        input |= this.INP_LTHUMB;
+      }
+      if (controllers.isControlDown(i, CIDS.RANALOG)) {
+        input |= this.INP_RTHUMB;
+      }
+
+      let analog0x = controllers.getAxisValue(i, 0, true);
+      let analog0y = controllers.getAxisValue(i, 0, false);
+      const analog1x = controllers.getAxisValue(i, 1, true);
+      const analog1y = controllers.getAxisValue(i, 1, false);
+
+      // WRC - see ANALOG_BIT's definition above: getAxisValue() only ever
+      // reads a real gamepad's axes, it has no idea these keyboard keys
+      // exist, so this app overrides the left-stick axis values by hand
+      // when they're down. Player 1 (keyboard) only, matching the same
+      // i === 0 gate flycast/N64 use for the identical pattern.
+      if (i === 0) {
+        if (keyToControlMapping.isControlDown(ANALOG_RIGHT)) analog0x = 1;
+        if (keyToControlMapping.isControlDown(ANALOG_LEFT)) analog0x = -1;
+        if (keyToControlMapping.isControlDown(ANALOG_UP)) analog0y = -1;
+        if (keyToControlMapping.isControlDown(ANALOG_DOWN)) analog0y = 1;
+      }
+
+      let controller = this.getControllerIndex(i);
+      this.sendInput(
+        controller,
+        input,
+        analog0x,
+        analog0y,
+        analog1x,
+        analog1y,
+      );
+    }
   }
 
   createAudioProcessor() {
@@ -171,28 +313,35 @@ export class Emulator extends RetroAppWrapper {
 
   preInit(FS) {
     FS.mkdir('/home/web_user/retroarch/userdata/system/PPSSPP');
-    FS.mkdir('/home/web_user/retroarch/userdata/system/PPSSPP/flash0');
-    FS.mkdir('/home/web_user/retroarch/userdata/system/PPSSPP/flash0/font');
+  }
 
-    const base64ToUint8Array = (b64) => {
-      const bin = atob(b64);
-      return Uint8Array.from(bin, c => c.charCodeAt(0));
-    }
+  // WRC - assets.zip is PPSSPP's own full assets/ directory (flash0 fonts,
+  // ppge_atlas.zim, compat.ini, etc), zipped as-is and dropped in public/.
+  // Replaces the old approach of hand-picking individual files to
+  // base64-embed in files.js (which kept missing ones a specific dialog
+  // needed - see the ltn1-ltn15 fix attempt). Once this is confirmed
+  // working, the zip's own contents can be trimmed down to just what's
+  // actually needed instead of shipping the whole PPSSPP asset set.
+  getExtractPath(path) {
+    // The zip's entries are all under a top-level "assets/" folder (the
+    // directory name itself got zipped, not just its contents) - strip that
+    // so contents land directly under the PPSSPP system directory, matching
+    // upstream PPSSPP's own expected "system/PPSSPP/flash0/..." layout.
+    return path.replace(/^assets\//, '');
+  }
 
-    FS.writeFile(
-      "/home/web_user/retroarch/userdata/system/PPSSPP/ppge_atlas.zim",
-      base64ToUint8Array(ppge_atlas)
+  async onWriteAdditionalFiles() {
+    const { FS } = window;
+    const response = await fetch('assets.zip');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await this.extractArchive(
+      FS,
+      '/home/web_user/retroarch/userdata/system/PPSSPP',
+      bytes,
+      this.DEFAULT_MAX_EXTRACT_SIZE,
+      null
     );
-
-    FS.writeFile(
-      "/home/web_user/retroarch/userdata/system/PPSSPP/flash0/font/jpn0.pgf",
-      base64ToUint8Array(jpn0)
-    );
-
-    FS.writeFile(
-      "/home/web_user/retroarch/userdata/system/PPSSPP/flash0/font/ltn0.pgf",
-      base64ToUint8Array(ltn0)
-    );
+    await super.onWriteAdditionalFiles();
   }
 
   getScriptUrl() {
@@ -247,44 +396,95 @@ export class Emulator extends RetroAppWrapper {
     const { saveStatePath, started } = this;
     const { FS, Module } = window;
 
+    if (!started) {
+      return;
+    }
+
+    // Save to files
+    Module._cmd_savefiles();
+
+    // WRC - PSP's actual in-game "Save Game" data lives in a directory tree
+    // (PSP_GAME's save format: SAVEDATA/<gameId+saveId>/PARAM.SFO, actual
+    // save file(s), icons, etc. - a dynamic, per-game set of files). Walk
+    // it recursively (same shape as webrcade-app-retro-dosbox-pure's saveState() -
+    // FS.readdir + FS.stat mode-bit checks) and hand the whole tree to
+    // SaveManager as one flat {name, content} array; it hashes each file
+    // individually via checkFilesChanged() to skip saving when nothing
+    // changed, and zips the whole tree using each entry's name (which
+    // includes the relative subdirectory path) as its path inside the zip.
     try {
-      if (!started) {
-        return;
-      }
+      const { SAVEDATA_DIR } = this;
+      const savedataFiles = [];
 
-      // Save to files
-      Module._cmd_savefiles();
-
-      let path = '';
-      const files = [];
-      let s = null;
-
-      path = `/home/web_user/retroarch/userdata/saves/${this.GAME_SRAM_NAME}`;
-      LOG.info('Checking: ' + path);
-      try {
-        s = FS.readFile(path);
-        if (s) {
-          LOG.info('Found save file: ' + path);
-          files.push({
-            name: this.SAVE_NAME,
-            content: s,
-          });
+      const walkFiles = (path) => {
+        let dir;
+        try {
+          dir = FS.readdir(path);
+        } catch (e) {
+          return;
         }
-      } catch (e) {}
+        dir.forEach(entry => {
+          if (entry === '.' || entry === '..') return;
+          const fullPath = path + '/' + entry;
+          const stat = FS.stat(fullPath);
+          const isDirectory = (stat.mode & 0o40000) !== 0;
+          const isFile = (stat.mode & 0o100000) !== 0;
+          if (isDirectory) {
+            walkFiles(fullPath);
+          } else if (isFile) {
+            const s = FS.readFile(fullPath);
+            if (s) {
+              savedataFiles.push({
+                name: fullPath.substring(SAVEDATA_DIR.length + 1),
+                content: s,
+              });
+            }
+          }
+        });
+      };
+      walkFiles(SAVEDATA_DIR);
 
-      if (files.length > 0) {
-        if (await this.getSaveManager().checkFilesChanged(files)) {
+      if (savedataFiles.length > 0) {
+        if (await this.getSaveManager().checkFilesChanged(savedataFiles)) {
+          const totalBytes = savedataFiles.reduce((sum, f) => sum + f.content.length, 0);
+
+          // WRC - SaveManager.save() zips internally but doesn't return the
+          // zip or its size, so measuring the actual compressed size means
+          // zipping locally too (same Zip helper SaveManager itself uses)
+          // just for this log - a real, if small, redundant compression
+          // pass on every save. Was useful for checking real-world save
+          // sizes during development; commented out rather than removed
+          // since it's cheap to re-enable if that's needed again.
+          // let compressedBytes = null;
+          // try {
+          //   const zip = new Zip();
+          //   const zipBlob = await zip.zipFiles(
+          //     savedataFiles.map(f => ({
+          //       name: f.name,
+          //       content: f.content instanceof Blob ? f.content : new Blob([f.content]),
+          //     }))
+          //   );
+          //   compressedBytes = zipBlob.size;
+          // } catch (e) {
+          //   LOG.error('Error measuring PSP save data zip size: ' + e);
+          // }
+
+          const toKB = (bytes) => (bytes / 1024).toFixed(1) + 'KB';
+          LOG.info(
+            `Saving PSP save data: ${savedataFiles.length} file(s), ` +
+            `${toKB(totalBytes)} uncompressed`
+            // + (compressedBytes !== null ? `, ${toKB(compressedBytes)} compressed (zip)` : '')
+          );
+
           await this.getSaveManager().save(
             saveStatePath,
-            files,
+            savedataFiles,
             this.saveMessageCallback,
           );
         }
-      } else {
-        await this.getSaveManager().delete(path);
       }
     } catch (e) {
-      LOG.error('Error persisting save state: ' + e);
+      LOG.error('Error persisting PSP save data: ' + e);
     }
   }
 
@@ -292,31 +492,30 @@ export class Emulator extends RetroAppWrapper {
     const { saveStatePath } = this;
     const { FS } = window;
 
-    // Write the save state (if applicable)
+    // WRC - restore the PSP save-data directory tree saved in saveState()
     try {
-      // Load
-      const files = await this.getSaveManager().load(
+      const { SAVEDATA_DIR } = this;
+      const savedataFiles = await this.getSaveManager().load(
         saveStatePath,
         this.loadMessageCallback,
       );
 
-      if (files) {
-        for (let i = 0; i < files.length; i++) {
-          const f = files[i];
-          if (f.name === this.SAVE_NAME) {
-            LOG.info(`writing ${this.GAME_SRAM_NAME} file`);
-            FS.writeFile(
-              `/home/web_user/retroarch/userdata/saves/${this.GAME_SRAM_NAME}`,
-              f.content,
-            );
-          }
+      if (savedataFiles) {
+        for (let i = 0; i < savedataFiles.length; i++) {
+          const f = savedataFiles[i];
+          const outPath = `${SAVEDATA_DIR}/${f.name}`;
+          const destDir = outPath.substring(0, outPath.lastIndexOf('/'));
+          this.createDirectories(FS, destDir);
+          FS.writeFile(outPath, f.content);
         }
 
+        LOG.info(`Restored PSP save data: ${savedataFiles.length} file(s)`);
+
         // Cache the initial files
-        await this.getSaveManager().checkFilesChanged(files);
+        await this.getSaveManager().checkFilesChanged(savedataFiles);
       }
     } catch (e) {
-      LOG.error('Error loading save state: ' + e);
+      LOG.error('Error loading PSP save data: ' + e);
     }
   }
 

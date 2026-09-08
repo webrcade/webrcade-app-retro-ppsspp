@@ -7,16 +7,16 @@ export class GamepadControlsTab extends ControlsTab {
     return (
       <>
         {this.renderControl('start', 'Start')}
-        {this.renderControl('dpad', 'Move')}
-        {this.renderControl('lanalog', 'Move')}
-        {this.renderControl('x', 'Button A')}
-        {this.renderControl('a', 'Button B')}
-        {this.renderControl('b', 'Button C')}
-        {this.renderControl('y', 'Button X')}
-        {this.renderControl('lbump', 'Button Y')}
-        {this.renderControl('rbump', 'Button Z')}
-        {this.renderControl('ltrig', 'Left Bumper')}
-        {this.renderControl('rtrig', 'Right Bumper')}
+        {this.renderControl('select', 'Select')}
+        {this.renderControl('dpad', 'D-pad')}
+        {this.renderControl('lanalog', 'Left analog')}
+        {this.renderControl('ranalog', 'Mapped to face buttons')}
+        {this.renderControl('b', 'Circle')}
+        {this.renderControl('a', 'Cross')}
+        {this.renderControl('y', 'Triangle')}
+        {this.renderControl('x', 'Square')}
+        {this.renderControl('lbump', 'L')}
+        {this.renderControl('rbump', 'R')}
       </>
     );
   }
@@ -27,18 +27,21 @@ export class KeyboardControlsTab extends ControlsTab {
     return (
       <>
         {this.renderKey('Enter', 'Start')}
-        {this.renderKey('ArrowUp', 'Up')}
-        {this.renderKey('ArrowDown', 'Down')}
-        {this.renderKey('ArrowLeft', 'Left')}
-        {this.renderKey('ArrowRight', 'Right')}
-        {this.renderKey('KeyZ', 'Button A')}
-        {this.renderKey('KeyX', 'Button B')}
-        {this.renderKey('KeyC', 'Button C')}
-        {this.renderKey('KeyA', 'Button X')}
-        {this.renderKey('KeyS', 'Button Y')}
-        {this.renderKey('KeyD', 'Button Z')}
-        {this.renderKey('KeyQ', 'Left Bumper')}
-        {this.renderKey('KeyE', 'Right Bumper')}
+        {this.renderKey('ShiftRight', 'Select')}
+        {this.renderKey('ArrowUp', 'Analog stick (Up)')}
+        {this.renderKey('ArrowDown', 'Analog stick (Down)')}
+        {this.renderKey('ArrowLeft', 'Analog stick (Left)')}
+        {this.renderKey('ArrowRight', 'Analog stick (Right)')}
+        {this.renderKey('KeyI', 'D-pad (Up)')}
+        {this.renderKey('KeyK', 'D-pad (Down)')}
+        {this.renderKey('KeyJ', 'D-pad (Left)')}
+        {this.renderKey('KeyL', 'D-pad (Right)')}
+        {this.renderKey('KeyX', 'Circle')}
+        {this.renderKey('KeyZ', 'Cross')}
+        {this.renderKey('KeyS', 'Triangle')}
+        {this.renderKey('KeyA', 'Square')}
+        {this.renderKey('KeyQ', 'L')}
+        {this.renderKey('KeyW', 'R')}
       </>
     );
   }
