@@ -9,6 +9,10 @@ import {
   ShaderSettingsTab,
 } from '@webrcade/app-common';
 
+// TODO - copy-pasted from the Saturn app as a starting template for the
+// on-screen-controls feature and never renamed. Works fine (name is
+// consistent everywhere it's referenced), just confusing - rename to
+// something PSP-specific (e.g. PspSettingsEditor).
 export class SaturnSettingsEditor extends Component {
   constructor() {
     super();
@@ -27,6 +31,8 @@ export class SaturnSettingsEditor extends Component {
       bilinearMode: emulator.getPrefs().getBilinearMode(),
       origScreenSize: emulator.getPrefs().getScreenSize(),
       screenSize: emulator.getPrefs().getScreenSize(),
+      origScreenControls: emulator.getPrefs().getScreenControls(),
+      screenControls: emulator.getPrefs().getScreenControls(),
     }
 
     this.shaderService = this.props.emulator.getShadersService();
@@ -38,7 +44,7 @@ export class SaturnSettingsEditor extends Component {
   }
 
   render() {
-    const { emulator, onClose } = this.props;
+    const { emulator, onClose, showOnScreenControls } = this.props;
     const { tabIndex, values, focusGridComps } = this.state;
 
     const setFocusGridComps = (comps) => {
@@ -63,6 +69,11 @@ export class SaturnSettingsEditor extends Component {
             emulator.updateScreenSize();
             updated = true;
           }
+          if (values.origScreenControls !== values.screenControls) {
+            emulator.getPrefs().setScreenControls(values.screenControls);
+            emulator.updateOnScreenControls();
+            updated = true;
+          }
           if (updated) {
             emulator.getPrefs().save();
           }
@@ -85,6 +96,7 @@ export class SaturnSettingsEditor extends Component {
                 emulator={emulator}
                 isBilinearMode={true}
                 isActive={tabIndex === 0}
+                showOnScreenControls={showOnScreenControls}
                 setFocusGridComps={setFocusGridComps}
                 values={values}
                 setValues={setValues}

@@ -1,9 +1,9 @@
 import {
+  BasicRetroAppWrapper,
   Controller,
   Controllers,
   KeyCodeToControlMapping,
   ScriptAudioProcessor,
-  RetroAppWrapper,
   DisplayLoop,
   KCODES,
   CIDS,
@@ -24,7 +24,50 @@ const ANALOG_DOWN = ANALOG_BIT | CIDS.DOWN;
 const ANALOG_LEFT = ANALOG_BIT | CIDS.LEFT;
 const ANALOG_RIGHT = ANALOG_BIT | CIDS.RIGHT;
 
-export class Emulator extends RetroAppWrapper {
+// WRC - same fine-positioning modifier scheme as the N64 apps
+// (webrcade-app-parallel-n64's index.js), Control-only: reduces the
+// analog stick to 50% deflection. Unlike Dreamcast, PSP has a real
+// Select button already bound to Shift-Right above, so the second
+// (Shift-driven) 25% tier isn't available here without colliding with
+// Select - Control alone is as far as this app can go.
+const ANALOG_50 = 0x2000;
+
+class PspKeyCodeToControlMapping extends KeyCodeToControlMapping {
+  constructor() {
+    super({
+      [KCODES.ENTER]: CIDS.START,
+      [KCODES.SHIFT_RIGHT]: CIDS.SELECT,
+      [KCODES.ESCAPE]: CIDS.ESCAPE,
+      [KCODES.ARROW_UP]: ANALOG_UP,
+      [KCODES.ARROW_DOWN]: ANALOG_DOWN,
+      [KCODES.ARROW_RIGHT]: ANALOG_RIGHT,
+      [KCODES.ARROW_LEFT]: ANALOG_LEFT,
+      [KCODES.I]: CIDS.UP,
+      [KCODES.J]: CIDS.LEFT,
+      [KCODES.K]: CIDS.DOWN,
+      [KCODES.L]: CIDS.RIGHT,
+      [KCODES.S]: CIDS.Y, // Triangle
+      [KCODES.X]: CIDS.B, // Circle
+      [KCODES.Z]: CIDS.A, // Cross
+      [KCODES.A]: CIDS.X, // Square
+      [KCODES.Q]: CIDS.LBUMP, // L
+      [KCODES.W]: CIDS.RBUMP, // R
+      [KCODES.CONTROL_RIGHT]: ANALOG_50,
+      [KCODES.CONTROL_LEFT]: ANALOG_50,
+    });
+  }
+
+  // This app maps both Control keys to Analog 50% above -- a real
+  // gameplay modifier. The shared Ctrl+Shift pause sequence collides with
+  // holding Control (analog) and Shift (Select) together, so it's
+  // disabled for this app only. The literal Escape key (still mapped
+  // above) and the gamepad pause combo (SL+X, LT+LA) are unaffected.
+  isEscapeKeySequenceEnabled() {
+    return false;
+  }
+}
+
+export class Emulator extends BasicRetroAppWrapper {
 
   // WRC - required by RetroAppWrapper itself (retrowrapper/index.js:914,
   // `this.saveStatePath = ${this.saveStatePrefix}${this.SAVE_NAME}`) to
@@ -36,6 +79,43 @@ export class Emulator extends RetroAppWrapper {
 
   constructor(app, debug = false) {
     super(app, debug);
+
+    // TODO - diagnostic left in from the PPSSPP intermittent lockup
+    // investigation; the actual root cause was found and fixed (FFmpeg's
+    // internal codec threading racing PPSSPP's own ThreadManager pool -
+    // see MediaEngine.cpp's threads=1 fix), so this is no longer needed
+    // for active investigation. Shipped anyway since the overhead is low
+    // and it's been running fine for users - but it's still logging every
+    // pthread_create()-driven Worker spawn/terminate with a timestamp and
+    // stack trace to the console on every game. Remove once there's a
+    // clean window to do a production rebuild without it.
+    // Patches the global Worker constructor (same monkey-patch technique
+    // used for WebAssembly.Memory.prototype.grow earlier this session),
+    // before the Emscripten module (and its pthread pool) ever instantiates.
+    if (!window.__wrcWorkerPatched) {
+      window.__wrcWorkerPatched = true;
+      const OrigWorker = window.Worker;
+      let workerCount = 0;
+      const activeWorkers = new Set();
+      function WrappedWorker(...args) {
+        const id = ++workerCount;
+        const ts = performance.now().toFixed(1);
+        activeWorkers.add(id);
+        console.log(`[WRC-THREAD] Worker #${id} created @ ${ts}ms - ${activeWorkers.size} active - src=${args[0]}`);
+        console.trace(`[WRC-THREAD] Worker #${id} creation site`);
+        const w = new OrigWorker(...args);
+        const origTerminate = w.terminate.bind(w);
+        w.terminate = (...targs) => {
+          activeWorkers.delete(id);
+          console.log(`[WRC-THREAD] Worker #${id} terminated @ ${performance.now().toFixed(1)}ms - ${activeWorkers.size} active`);
+          return origTerminate(...targs);
+        };
+        return w;
+      }
+      WrappedWorker.prototype = OrigWorker.prototype;
+      window.Worker = WrappedWorker;
+    }
+
     this.analogMode = true;
 
     this.audioStarted = 0;
@@ -131,34 +211,16 @@ export class Emulator extends RetroAppWrapper {
   // diamond, not a letter/color match. PSP has no analog trigger separate
   // from L/R (unlike PSX's L2/R2), so just one L/R key pair (Q/W) is needed.
   //
-  // Gamepad input needs no per-app mapping here - CIDS.A/B/X/Y etc. already
-  // map generically from a real gamepad via StandardPadMapping, and
-  // RetroAppWrapper's own (un-overridden) pollControls()/sendInput() already
-  // reads both analog sticks and the full WRC INP_* button set into
-  // wrc_set_input() - see the new wrc_set_input() in libretro.cpp for the
-  // PSP-side CTRL_* translation (positional Cross/Circle/Square/Triangle,
-  // right stick passed straight through to CTRL_STICK_RIGHT for twin-stick
-  // games, matching retro_input()'s own existing convention).
+  // Gamepad face/D-pad button input needs no per-app mapping here - CIDS.A/
+  // B/X/Y etc. already map generically from a real gamepad via
+  // StandardPadMapping, forwarded via wrc_set_input() - see libretro.cpp
+  // for the PSP-side CTRL_* translation (positional Cross/Circle/Square/
+  // Triangle). The right analog stick is NOT passed through as real analog
+  // (see pollControls() below for why - PPSSPP's CTRL_STICK_RIGHT extension
+  // isn't read by any game we've found); it's converted to face-button
+  // presses there instead.
   createControllers() {
-    this.keyToControlMapping = new KeyCodeToControlMapping({
-      [KCODES.ENTER]: CIDS.START,
-      [KCODES.SHIFT_RIGHT]: CIDS.SELECT,
-      [KCODES.ESCAPE]: CIDS.ESCAPE,
-      [KCODES.ARROW_UP]: ANALOG_UP,
-      [KCODES.ARROW_DOWN]: ANALOG_DOWN,
-      [KCODES.ARROW_RIGHT]: ANALOG_RIGHT,
-      [KCODES.ARROW_LEFT]: ANALOG_LEFT,
-      [KCODES.I]: CIDS.UP,
-      [KCODES.J]: CIDS.LEFT,
-      [KCODES.K]: CIDS.DOWN,
-      [KCODES.L]: CIDS.RIGHT,
-      [KCODES.S]: CIDS.Y, // Triangle
-      [KCODES.X]: CIDS.B, // Circle
-      [KCODES.Z]: CIDS.A, // Cross
-      [KCODES.A]: CIDS.X, // Square
-      [KCODES.Q]: CIDS.LBUMP, // L
-      [KCODES.W]: CIDS.RBUMP, // R
-    });
+    this.keyToControlMapping = new PspKeyCodeToControlMapping();
     return new Controllers([
       new Controller(this.keyToControlMapping),
       new Controller(),
@@ -184,11 +246,21 @@ export class Emulator extends RetroAppWrapper {
 
     const isAnalog = analogMode;
 
+    // WRC - see BasicRetroAppWrapper's own pollControls() for the
+    // reference version of this scoping: each button is only watched if
+    // something downstream actually cares about its hold-time, so an
+    // unneeded one (this app leaves Start/Select-hack both off) doesn't
+    // pollute the shared escapeCount used by all three gates below.
+    const watchLtrig = this.isEscapeHackEnabled();
+    const watchLanalog = this.isEscapeHackEnabled() || this.isSelectEscapeHackEnabled();
+    const watchRtrig = this.isSelectEscapeHackEnabled() || this.isStartEscapeHackEnabled();
+    const watchRanalog = this.isStartEscapeHackEnabled();
+
     if (
-      controllers.isControlDown(0, CIDS.RTRIG) ||
-      controllers.isControlDown(0, CIDS.LTRIG) ||
-      controllers.isControlDown(0, CIDS.LANALOG) ||
-      controllers.isControlDown(0, CIDS.RANALOG)
+      (watchLtrig && controllers.isControlDown(0, CIDS.LTRIG)) ||
+      (watchLanalog && controllers.isControlDown(0, CIDS.LANALOG)) ||
+      (watchRtrig && controllers.isControlDown(0, CIDS.RTRIG)) ||
+      (watchRanalog && controllers.isControlDown(0, CIDS.RANALOG))
     ) {
       this.escapeCount = this.escapeCount === -1 ? 0 : this.escapeCount + 1;
     } else {
@@ -198,7 +270,17 @@ export class Emulator extends RetroAppWrapper {
     for (let i = 0; i < CONTROLLER_COUNT; i++) {
       let input = 0;
 
-      const escapeOk = !this.isEscapeHackEnabled() || (this.escapeCount === -1 || this.escapeCount < 60);
+      // WRC - raw "haven't been held too long yet" signal, shared by all
+      // three isXEscapeHackEnabled() gates below (see
+      // BasicRetroAppWrapper's own pollControls() for the reference
+      // version of this split - PSP has no real button/game function
+      // that collides with RT+LA/RT+RA the way PSX's R2+L3/R3 does, so
+      // this app just uses the inherited false defaults for Start/Select
+      // rather than overriding them).
+      const escapeHackOk = (this.escapeCount === -1 || this.escapeCount < 60);
+      const escapeOk = !this.isEscapeHackEnabled() || escapeHackOk;
+      const startOk = !this.isStartEscapeHackEnabled() || escapeHackOk;
+      const selectOk = !this.isSelectEscapeHackEnabled() || escapeHackOk;
 
       // Hack to reduce likelihood of accidentally bringing up menu
       if (
@@ -224,10 +306,10 @@ export class Emulator extends RetroAppWrapper {
       } else if (controllers.isControlDown(i, CIDS.LEFT, !isAnalog)) {
         input |= this.INP_LEFT;
       }
-      if (controllers.isControlDown(i, CIDS.START) && escapeOk) {
+      if (controllers.isControlDown(i, CIDS.START) && startOk) {
         input |= this.INP_START;
       }
-      if (controllers.isControlDown(i, CIDS.SELECT) && escapeOk) {
+      if (controllers.isControlDown(i, CIDS.SELECT) && selectOk) {
         input |= this.INP_SELECT;
       }
       if (controllers.isControlDown(i, CIDS.A)) {
@@ -248,12 +330,12 @@ export class Emulator extends RetroAppWrapper {
       if (controllers.isControlDown(i, CIDS.RBUMP)) {
         input |= this.INP_RBUMP;
       }
-      if (controllers.isControlDown(i, CIDS.LTRIG)) {
-        input |= this.INP_LTRIG;
-      }
-      if (controllers.isControlDown(i, CIDS.RTRIG)) {
-        input |= this.INP_RTRIG;
-      }
+      // WRC - INP_LTRIG/INP_RTRIG deliberately not forwarded: PSP has no
+      // real L2/R2, and the core itself ORs them into the exact same L/R
+      // bit as INP_LBUMP/INP_RBUMP (see retrostash/ppsspp-wasm/libretro/
+      // libretro.cpp's ExtractButtons()) - undocumented in this app's own
+      // pause-menu controls tab too, so dropping them here changes
+      // nothing a player could rely on.
       if (controllers.isControlDown(i, CIDS.LANALOG)) {
         input |= this.INP_LTHUMB;
       }
@@ -266,16 +348,42 @@ export class Emulator extends RetroAppWrapper {
       const analog1x = controllers.getAxisValue(i, 1, true);
       const analog1y = controllers.getAxisValue(i, 1, false);
 
-      // WRC - see ANALOG_BIT's definition above: getAxisValue() only ever
+      // WRC - real PSP hardware has no second analog stick, and in
+      // practice no game we've found actually reads PPSSPP's
+      // CTRL_STICK_RIGHT extension (forwarding analog1x/analog1y straight
+      // through did nothing). Instead, treat right-stick deflection as
+      // face-button presses (diamond layout: up=Y/Triangle, down=A/Cross,
+      // left=X/Square, right=B/Circle) - useful for games (e.g. light-gun
+      // titles) whose crosshair/cursor only responds to face buttons.
+      const RANALOG_THRESHOLD = 0.5;
+      if (analog1y < -RANALOG_THRESHOLD) {
+        input |= this.INP_Y;
+      } else if (analog1y > RANALOG_THRESHOLD) {
+        input |= this.INP_A;
+      }
+      if (analog1x < -RANALOG_THRESHOLD) {
+        input |= this.INP_X;
+      } else if (analog1x > RANALOG_THRESHOLD) {
+        input |= this.INP_B;
+      }
+
+      // WRC - see BasicRetroAppWrapper's own pollControls() for the
+      // reference version of this - getAxisValue() only ever
       // reads a real gamepad's axes, it has no idea these keyboard keys
       // exist, so this app overrides the left-stick axis values by hand
       // when they're down. Player 1 (keyboard) only, matching the same
       // i === 0 gate flycast/N64 use for the identical pattern.
       if (i === 0) {
-        if (keyToControlMapping.isControlDown(ANALOG_RIGHT)) analog0x = 1;
-        if (keyToControlMapping.isControlDown(ANALOG_LEFT)) analog0x = -1;
-        if (keyToControlMapping.isControlDown(ANALOG_UP)) analog0y = -1;
-        if (keyToControlMapping.isControlDown(ANALOG_DOWN)) analog0y = 1;
+        // WRC - fine-positioning modifier (see ANALOG_50's definition
+        // above): Control held reduces the full-deflection multiplier
+        // below, same math as the N64 apps' pollControls() (Control-only
+        // here, since Shift is already Select on this app).
+        const multiplier = keyToControlMapping.isControlDown(ANALOG_50) ? 0.5 : 1;
+
+        if (keyToControlMapping.isControlDown(ANALOG_RIGHT)) analog0x = multiplier;
+        if (keyToControlMapping.isControlDown(ANALOG_LEFT)) analog0x = -multiplier;
+        if (keyToControlMapping.isControlDown(ANALOG_UP)) analog0y = -multiplier;
+        if (keyToControlMapping.isControlDown(ANALOG_DOWN)) analog0y = multiplier;
       }
 
       let controller = this.getControllerIndex(i);
@@ -284,8 +392,8 @@ export class Emulator extends RetroAppWrapper {
         input,
         analog0x,
         analog0y,
-        analog1x,
-        analog1y,
+        0,
+        0,
       );
     }
   }
@@ -309,7 +417,17 @@ export class Emulator extends RetroAppWrapper {
         this.audioStarted++;
       }
     }
+
+    // Touch/mouse/keyboard interaction detection + on-screen touch overlay
+    // gating is inherited from BasicRetroAppWrapper.
+    super.onFrame();
   }
+
+  // Base class default pauses on any tap anywhere on screen -- redundant
+  // (and disruptive) now that there's a dedicated Pause button in the
+  // touch overlay. Same override every other TouchOverlay app uses for
+  // the same reason.
+  createTouchListener() {}
 
   preInit(FS) {
     FS.mkdir('/home/web_user/retroarch/userdata/system/PPSSPP');
@@ -517,15 +635,6 @@ export class Emulator extends RetroAppWrapper {
     } catch (e) {
       LOG.error('Error loading PSP save data: ' + e);
     }
-  }
-
-  getRamExpansion() {
-    const props = this.getProps();
-    const expansion = props.ramExpansion;
-    if (expansion) {
-      return expansion;
-    }
-    return 0;
   }
 
   applyGameSettings() {

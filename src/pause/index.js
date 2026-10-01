@@ -203,6 +203,7 @@ export class EmulatorPauseScreen extends Component {
           <SaturnSettingsEditor
             emulator={emulator}
             onClose={closeCallback}
+            showOnScreenControls={true}
           />
         ) : null}
         {mode === ModeEnum.CHEATS ? (
