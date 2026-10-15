@@ -4,7 +4,7 @@
 
 The Sony PSP application for [webЯcade](https://www.webrcade.com) is an emulator for the [Sony PlayStation Portable game console](https://en.wikipedia.org/wiki/PlayStation_Portable).
 
-The underlying emulator is a WebAssembly build of [PPSSPP](https://github.com/hrydgard/ppsspp).
+The underlying emulator is [PPSSPP](https://github.com/hrydgard/ppsspp).
 
 <p align="center">
  <a href="https://play.webrcade.com">
